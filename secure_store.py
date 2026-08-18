@@ -62,6 +62,24 @@ def _get_or_create_master_key() -> bytes:
     return key
 
 
+def encrypt_secret(plaintext: bytes, *, aad: bytes) -> tuple[bytes, bytes]:
+    """Encrypt an application secret with the OS-vault-backed master key."""
+    if not plaintext or not aad:
+        raise SecureStoreError("Secret plaintext and authenticated context are required.")
+    nonce = os.urandom(12)
+    return nonce, AESGCM(_get_or_create_master_key()).encrypt(nonce, plaintext, aad)
+
+
+def decrypt_secret(nonce: bytes, ciphertext: bytes, *, aad: bytes) -> bytes:
+    """Decrypt an application secret, rejecting tampering or context substitution."""
+    if len(nonce) != 12 or not ciphertext or not aad:
+        raise SecureStoreError("Encrypted secret has an invalid format.")
+    try:
+        return AESGCM(_get_or_create_master_key()).decrypt(nonce, ciphertext, aad)
+    except Exception as exc:
+        raise SecureStoreError("Secret decryption or authentication failed.") from exc
+
+
 def save_api_key(api_key: str) -> None:
     api_key = api_key.strip()
     if not api_key:

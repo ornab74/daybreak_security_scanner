@@ -42,12 +42,22 @@ class DependencyRiskMap(BaseModel):
 class DependencyDeepReview(BaseModel):
     package: str
     severity: Literal["medium", "high"]
+    applicable: bool
+    confirmed_risk: Risk
     confidence: float = Field(ge=0.0, le=1.0)
     evidence_summary: str
     affected_reasoning: str
     recommended_action: str
     fixed_or_safer_version: str | None = None
     verification_note: str
+
+    @model_validator(mode="after")
+    def validate_applicability_conclusion(self):
+        if not self.applicable and self.confirmed_risk != Risk.low:
+            raise ValueError("a non-applicable advisory must produce confirmed_risk=low")
+        if self.applicable and self.confirmed_risk == Risk.low:
+            raise ValueError("an applicable advisory cannot produce confirmed_risk=low")
+        return self
 
 
 class DependencyFutureReview(BaseModel):

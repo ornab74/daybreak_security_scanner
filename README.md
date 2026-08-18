@@ -92,6 +92,11 @@ present advisory applicability. A MEDIUM result receives a second evidence pass 
 - evidence confidence and the conditions limiting that conclusion;
 - a concrete defensive action and the smallest established safer version floor.
 
+Layer-1 MEDIUM/HIGH values are labeled **TRIAGE** when an evidence dossier is scheduled. The
+dossier returns `applicable` plus a schema-validated **FINAL CURRENT** rating. If an exact pin is
+newer than every confirmed affected range, the final rating must be LOW; the schema rejects a
+non-applicable advisory that attempts to retain MEDIUM/HIGH.
+
 The screenshot contains a constraint, not a resolved lock. Consequently, the conclusion is
 about versions the resolver *may* select. Confirm the running artifact, build method, transitive
 graph, platform, and linked native libraries before treating the result as deployment impact.
@@ -644,6 +649,41 @@ release-grade supply-chain lock, regenerate it in trusted CI with artifact hashe
 resulting transitive and platform-marker changes before merge.
 
 ### Model configuration
+
+The GUI also supports encrypted provider profiles through **Provider settings**. A profile
+contains the provider label, HTTPS base endpoint, exact model identifier, protocol dialect,
+and API key. The complete JSON profile is encrypted as a single AES-256-GCM authenticated
+blob before SQLite receives it; SQLite stores only an integer ID, random nonce, ciphertext,
+and timestamp. The encryption key remains in the operating-system credential vault. This
+means even endpoint and model metadata are not exposed as plaintext database columns.
+
+Built-in starting points are:
+
+- OpenAI Responses API (`https://api.openai.com/v1`).
+- DigitalOcean Gradient's OpenAI-compatible endpoint
+  (`https://inference.do-ai.run/v1`) with its documented `kimi-k2.5` model ID.
+- Meta Model API / Muse Spark 1.1 and custom OpenAI-compatible services. For these,
+  copy the exact endpoint and model ID issued by the provider console. Daybreak deliberately
+  does not invent preview routing identifiers.
+
+`Kimi K3` is not hard-coded because no verified provider identifier is currently available.
+When a provider exposes it, select **Custom OpenAI-compatible** and enter the exact model ID
+shown by that provider. This avoids silently routing sensitive repository material to a
+lookalike hostname or an unintended model.
+
+Before saving and again before use, Daybreak requires HTTPS, removes no security-relevant URL
+components, rejects embedded credentials/query strings/fragments, resolves DNS, and blocks
+loopback, private, link-local, multicast, reserved, and unspecified destinations. HTTP
+redirects remain disabled. Non-OpenAI providers use strict JSON-schema Chat Completions;
+provider-side web search is disabled because compatible wire formats do not imply compatible
+tool semantics. If a provider does not implement strict structured output, the scan fails
+closed instead of accepting unvalidated prose.
+
+Operationally, use a provider key limited to inference, keep provider-side retention disabled
+where available, select only repositories you are authorized to transmit, and rotate the key
+after any suspected workstation or vault compromise. Endpoint validation reduces accidental
+SSRF and misrouting but cannot prove how a remote provider stores prompts or governs its
+models; review that provider's current privacy, residency, logging, and retention terms.
 
 The default model is `gpt-5.6-terra`, which supports the Responses API,
 structured outputs, reasoning, and web search. Override all stages with

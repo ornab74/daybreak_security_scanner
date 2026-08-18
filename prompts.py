@@ -120,6 +120,10 @@ Rules:
    or investigate a specific condition.
 6. Severity must remain MEDIUM/HIGH because this stage is only invoked for escalated items;
    confidence is the place to express weak confirmation.
+7. `applicable` answers whether concrete evidence overlaps the supplied exact pin or declared
+   range. `confirmed_risk` is the FINAL current rating. If every located advisory is fully fixed
+   before an exact pin, set applicable=false and confirmed_risk=low even when Layer 1 said HIGH.
+   Never preserve escalation merely because the package parses archives or had a historical CVE.
 """).strip()
 
 DEPENDENCY_FORECAST_DEVELOPER_PROMPT = (TRUST_BOUNDARY + r"""

@@ -29,6 +29,10 @@ dist/
 *.key
 *.p12
 *.pfx
+*.sqlite
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
 
 # Generated Daybreak reports
 daybreak-*.json

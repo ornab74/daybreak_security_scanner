@@ -52,6 +52,7 @@ from secure_store import (
     load_api_key,
     save_api_key,
 )
+from provider_store import PROVIDER_PRESETS, ProviderProfile, ProviderStore, validate_profile
 from source_review import (
     MAX_DEEP_FILES,
     MAX_FINDINGS_PER_FILE,
@@ -134,15 +135,16 @@ def clean_for_ui(value: object, max_len: int = 100_000) -> str:
 
 
 class DaybreakClient:
-    def __init__(self, api_key: str, live_web: bool, cancel_event=None, status_callback=None, model_override: str | None = None):
+    def __init__(self, api_key: str, live_web: bool, cancel_event=None, status_callback=None, model_override: str | None = None, base_url: str = "https://api.openai.com/v1", protocol: str = "responses"):
         self.http_client = build_httpx_client()
         # One retry owner only: the SDK layer is disabled so attempts cannot multiply.
-        self.client = OpenAI(api_key=api_key, http_client=self.http_client, max_retries=0)
-        self.live_web = live_web
+        self.client = OpenAI(api_key=api_key, base_url=base_url, http_client=self.http_client, max_retries=0)
+        self.protocol = protocol
+        self.live_web = live_web and protocol == "responses"
         self.cancel_event = cancel_event
         self.status_callback = status_callback
         self.retry_policy = RetryPolicy.from_environment()
-        self.fallback_model = os.getenv("DAYBREAK_FALLBACK_MODEL", "gpt-4.1-mini").strip()
+        self.fallback_model = os.getenv("DAYBREAK_FALLBACK_MODEL", "gpt-4.1-mini").strip() if protocol == "responses" else ""
         self.model_fallbacks: dict[str, str] = {}
         self.model_override = model_override
 
@@ -182,6 +184,20 @@ class DaybreakClient:
         active_model = self.model_fallbacks.get(model, model)
 
         def request(selected_model: str):
+            if self.protocol == "chat_completions":
+                response = retry_call(
+                    lambda: self.client.chat.completions.create(
+                        model=selected_model,
+                        messages=[{"role": "system", "content": instructions}, {"role": "user", "content": prompt}],
+                        response_format={"type": "json_schema", "json_schema": {"name": schema.__name__, "strict": True, "schema": schema.model_json_schema()}},
+                    ),
+                    policy=self.retry_policy, cancelled=self._cancelled, wait=self._wait,
+                    on_retry=self._retry_notice,
+                )
+                content = response.choices[0].message.content
+                if not content:
+                    raise RuntimeError("Provider returned no structured output.")
+                return schema.model_validate_json(content)
             options = dict(
                 model=model,
                 instructions=instructions,
@@ -215,6 +231,8 @@ class DaybreakClient:
                     f"Model {model!r} is not provisioned; using {self.fallback_model!r} for this session"
                 )
             response = request(self.fallback_model)
+        if self.protocol == "chat_completions":
+            return response
         if response.output_parsed is None:
             raise RuntimeError("Model returned no structured output.")
         return response.output_parsed
@@ -335,6 +353,9 @@ class App(ctk.CTk):
         self.local_findings = []
         self.local_metadata: dict = {}
         self.selected_source_file: Path | None = None
+        self.provider_store = ProviderStore()
+        self._api_base_url = "https://api.openai.com/v1"
+        self._api_protocol = "responses"
 
         self._build_ui()
         self.after(100, self._drain_events)
@@ -359,7 +380,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(brand, text="Security Workbench · local evidence + layered AI review", font=ctk.CTkFont(size=12), anchor="w").pack(anchor="w")
         self.key_status = ctk.CTkLabel(heading, text="", corner_radius=10, width=105, height=28)
         self.key_status.grid(row=0, column=1, padx=6)
-        ctk.CTkButton(heading, text="API connection", command=self._toggle_connection_panel, width=120, fg_color="transparent", border_width=1).grid(row=0, column=2, padx=4)
+        ctk.CTkButton(heading, text="Provider settings", command=self._open_provider_settings, width=130, fg_color="transparent", border_width=1).grid(row=0, column=2, padx=4)
         ctk.CTkButton(heading, text="Setup", command=self._open_startup_wizard, width=82).grid(row=0, column=3, padx=(4,0))
 
         toolbar = ctk.CTkFrame(top, corner_radius=10)
@@ -666,7 +687,7 @@ class App(ctk.CTk):
         self.forecast_menu.configure(state="disabled" if selected == "Current packages/CVEs" else "normal")
 
     def _refresh_key_status(self):
-        saved = has_saved_key()
+        saved = self.provider_store.exists() or has_saved_key()
         self.key_status.configure(text="● API READY" if saved else "○ LOCAL ONLY")
     def _save_key(self):
         try:
@@ -674,8 +695,45 @@ class App(ctk.CTk):
         except Exception as exc: messagebox.showerror("Secure storage error", clean_for_ui(exc,1000))
     def _forget_key(self):
         try:
-            forget_api_key(); self.key_entry.delete(0,"end"); self._refresh_key_status(); self.after(100,self._open_startup_wizard)
+            self.provider_store.forget(); forget_api_key(); self.key_entry.delete(0,"end"); self.model_choice.set("GPT-5.6 Terra — standard API"); self._provider_model=None; self._refresh_key_status(); self.after(100,self._open_startup_wizard)
         except Exception as exc: messagebox.showerror("Secure storage error", clean_for_ui(exc,1000))
+
+    def _open_provider_settings(self):
+        window=ctk.CTkToplevel(self); window.title("Secure provider profile"); window.geometry("760x620"); window.transient(self); window.grab_set(); window.grid_columnconfigure(1,weight=1)
+        stored=None
+        try: stored=self.provider_store.load(resolve_dns=False)
+        except Exception as exc: messagebox.showerror("Provider profile",clean_for_ui(exc,1000),parent=window)
+        fields={}
+        def field(row,label,value="",secret=False):
+            ctk.CTkLabel(window,text=label,anchor="w",font=ctk.CTkFont(weight="bold")).grid(row=row,column=0,padx=(22,8),pady=8,sticky="w")
+            entry=ctk.CTkEntry(window,show="•" if secret else ""); entry.grid(row=row,column=1,padx=(4,22),pady=8,sticky="ew"); entry.insert(0,value); fields[label]=entry
+        preset=ctk.StringVar(value=stored.provider if stored and stored.provider in PROVIDER_PRESETS else "OpenAI")
+        ctk.CTkLabel(window,text="Provider preset",font=ctk.CTkFont(weight="bold")).grid(row=0,column=0,padx=(22,8),pady=(22,8),sticky="w")
+        menu=ctk.CTkOptionMenu(window,values=list(PROVIDER_PRESETS),variable=preset); menu.grid(row=0,column=1,padx=(4,22),pady=(22,8),sticky="ew")
+        field(1,"Profile label",stored.label if stored else "Primary")
+        field(2,"HTTPS API endpoint",stored.base_url if stored else PROVIDER_PRESETS["OpenAI"][0])
+        field(3,"Model ID",stored.model if stored else PROVIDER_PRESETS["OpenAI"][1])
+        field(4,"API key","",True)
+        protocol=ctk.StringVar(value=stored.protocol if stored else "responses")
+        ctk.CTkLabel(window,text="Protocol",font=ctk.CTkFont(weight="bold")).grid(row=5,column=0,padx=(22,8),pady=8,sticky="w")
+        ctk.CTkOptionMenu(window,values=["responses","chat_completions"],variable=protocol).grid(row=5,column=1,padx=(4,22),pady=8,sticky="ew")
+        note=ctk.CTkLabel(window,text="Kimi K2.5 is the currently documented DigitalOcean model. Kimi K3 can be entered as a custom model ID after your provider officially exposes it. Meta Muse Spark 1.1 preview routing values must be copied from the Meta console; Daybreak will not guess them. Custom endpoints must be public HTTPS and are revalidated before use.",wraplength=700,justify="left",anchor="w")
+        note.grid(row=6,column=0,columnspan=2,padx=22,pady=12,sticky="ew")
+        def apply_preset(choice):
+            endpoint,model,style=PROVIDER_PRESETS[choice]
+            for label,value in (("HTTPS API endpoint",endpoint),("Model ID",model)):
+                fields[label].delete(0,"end"); fields[label].insert(0,value)
+            protocol.set(style)
+        menu.configure(command=apply_preset)
+        def save():
+            try:
+                existing_key=stored.api_key if stored else ""
+                profile=ProviderProfile(fields["Profile label"].get(),preset.get(),fields["HTTPS API endpoint"].get(),fields["Model ID"].get(),fields["API key"].get().strip() or existing_key,protocol.get())
+                self.provider_store.save(profile); self._refresh_key_status(); window.destroy()
+            except Exception as exc: messagebox.showerror("Secure provider settings",clean_for_ui(exc,1500),parent=window)
+        actions=ctk.CTkFrame(window,fg_color="transparent"); actions.grid(row=7,column=0,columnspan=2,padx=22,pady=18,sticky="ew")
+        ctk.CTkButton(actions,text="Cancel",command=window.destroy,fg_color="transparent",border_width=1).pack(side="left")
+        ctk.CTkButton(actions,text="Validate & save encrypted",command=save,width=210).pack(side="right")
     def _pick_requirements(self):
         selected = filedialog.askopenfilename(
             title="Select dependency manifest or lockfile",
@@ -705,10 +763,20 @@ class App(ctk.CTk):
         except Exception as exc: messagebox.showerror("Manifest error", clean_for_ui(exc,1000))
     def _get_api_key(self):
         entered=self.key_entry.get().strip()
-        if entered: return entered
+        if entered:
+            self._api_base_url="https://api.openai.com/v1"; self._api_protocol="responses"; self._provider_model=None
+            if self.model_choice.get() not in MODEL_CHOICES: self.model_choice.set("GPT-5.6 Terra — standard API")
+            return entered
+        profile=self.provider_store.load()
+        if profile:
+            self._api_base_url=profile.base_url; self._api_protocol=profile.protocol; self.model_choice.set(profile.model); self.model_status.configure(text=f"{profile.provider} · {profile.protocol}"); self._provider_model=profile.model; return profile.api_key
         saved=load_api_key()
         if not saved: raise SecureStoreError("Enter an API key or save one securely first.")
+        self._api_base_url="https://api.openai.com/v1"; self._api_protocol="responses"; self._provider_model=None
         return saved
+
+    def _selected_model(self):
+        return getattr(self,"_provider_model",None) or MODEL_CHOICES[self.model_choice.get()]
     def _set_busy(self,busy):
         state="disabled" if busy else "normal"; self.dep_scan_btn.configure(state=state); self.man_scan_btn.configure(state=state); self.local_scan_btn.configure(state=state); self.cancel_btn.configure(state="normal" if busy else "disabled")
         if busy: self.progress.start()
@@ -738,7 +806,7 @@ class App(ctk.CTk):
         mode_labels={"Current packages/CVEs":"current","Future horizon only":"future","Current + future":"both"}
         scan_mode=mode_labels[self.dependency_mode.get()]
         depth=self.dependency_depth.get().lower()
-        horizon=int(self.forecast_horizon.get().split()[0]); prompt=self.dep_prompt.get("1.0","end").strip(); live_web=bool(self.live_web_var.get()); model=MODEL_CHOICES[self.model_choice.get()]; self.dep_output.delete("1.0","end"); self._launch(self._dependency_worker,self.requirements_path,prompt,api_key,live_web,model,horizon,scan_mode,depth)
+        horizon=int(self.forecast_horizon.get().split()[0]); prompt=self.dep_prompt.get("1.0","end").strip(); live_web=bool(self.live_web_var.get()); model=self._selected_model(); self.dep_output.delete("1.0","end"); self._launch(self._dependency_worker,self.requirements_path,prompt,api_key,live_web,model,horizon,scan_mode,depth)
 
     def _start_selected_source_review(self):
         if not self.selected_source_file:
@@ -747,7 +815,7 @@ class App(ctk.CTk):
             api_key=self._get_api_key()
         except Exception as exc:
             return messagebox.showerror("API key error",clean_for_ui(exc,1000))
-        model=MODEL_CHOICES[self.model_choice.get()]
+        model=self._selected_model()
         self.findings_output.delete("1.0","end"); self.diff_output.delete("1.0","end")
         self._launch(self._selected_source_worker,self.selected_source_file,api_key,model)
 
@@ -759,7 +827,7 @@ class App(ctk.CTk):
             try: relative=resolved.relative_to(root).as_posix()
             except ValueError: root=resolved.parent; relative=resolved.name
             snap=load_source_snapshot(root,relative)
-            client=DaybreakClient(api_key,live_web=False,cancel_event=self.cancel_event,status_callback=lambda message:self.events.put(("status",message)),model_override=model)
+            client=DaybreakClient(api_key,live_web=False,cancel_event=self.cancel_event,status_callback=lambda message:self.events.put(("status",message)),model_override=model,base_url=self._api_base_url,protocol=self._api_protocol)
             with self.client_lock: self.active_client=client
             self.events.put(("status",f"Reviewing {relative}"))
             review=client.review_source(path=relative,project_types=infer_project_types(root),rating="medium",numbered=number_source(snap.text),custom_prompt=DEFAULT_USER_PROMPT)
@@ -813,7 +881,9 @@ class App(ctk.CTk):
 
     def _current_dependency_detail(self, client, item, current, custom_prompt):
         deep=client.deep_dependency(item,current,custom_prompt)
-        return f"  ↳ evidence confidence={deep.confidence:.2f}: {deep.evidence_summary}\n  ↳ action: {deep.recommended_action}\n  ↳ safer/fixed: {deep.fixed_or_safer_version or 'not established'}\n\n"
+        final=deep.confirmed_risk.value
+        correction=" (triage corrected)" if final != current else ""
+        return f"  ↳ FINAL CURRENT={final.upper()}{correction}; applicable={'yes' if deep.applicable else 'no'}\n  ↳ evidence confidence={deep.confidence:.2f}: {deep.evidence_summary}\n  ↳ action: {deep.recommended_action}\n  ↳ safer/fixed: {deep.fixed_or_safer_version or 'not established'}\n\n"
 
     def _future_dependency_detail(self, client, item, future, horizon_months, custom_prompt):
         forecast=client.forecast_dependency(item,future,horizon_months,custom_prompt)
@@ -838,7 +908,7 @@ class App(ctk.CTk):
             exact=sum(record.exact for record in records)
             labels={"current":"current package/CVE evidence", "future":"future-risk horizon", "both":"current evidence + future-risk horizon"}
             self.events.put(("dep",f"Loaded {len(items)} dependencies from {path.name} ({ecosystems}); {exact} exact pins, {len(items)-exact} constraints; skipped {len(skipped)} unsupported entries.\nMode: {labels[scan_mode]}; future horizon: {horizon_months} month(s); depth: {depth}.\n\n"))
-            client=DaybreakClient(api_key,live_web,self.cancel_event,lambda message:self.events.put(("status",message)),model_override=model)
+            client=DaybreakClient(api_key,live_web,self.cancel_event,lambda message:self.events.put(("status",message)),model_override=model,base_url=self._api_base_url,protocol=self._api_protocol)
             with self.client_lock: self.active_client=client
             for start in range(0,len(items),DEPENDENCY_BATCH):
                 if self.cancel_event.is_set(): return
@@ -848,12 +918,13 @@ class App(ctk.CTk):
                     current=rating.current_risk.value; requested_future=rating.future_risk.value
                     gate=tune_future_risk(requested_future,current,horizon_months,rating.surface_signals,rating.future_confidence)
                     future=gate.calibrated
+                    current_label="TRIAGE" if depth != "fast" and current in {"medium","high"} and scan_mode in {"current","both"} else "CURRENT"
                     if scan_mode == "current":
-                        self.events.put(("dep",f"{item:<52} CURRENT={current.upper():<6}\n"))
+                        self.events.put(("dep",f"{item:<52} {current_label}={current.upper():<6}\n"))
                     elif scan_mode == "future":
                         self.events.put(("dep",f"{item:<52} FUTURE({horizon_months}m)={future.upper():<6} model={requested_future.upper():<6} confidence={rating.future_confidence:.2f}\n  ↳ entropy gate: {gate.reason}; supercharge={'active' if gate.supercharged else 'inactive'}\n"))
                     else:
-                        self.events.put(("dep",f"{item:<52} CURRENT={current.upper():<6} FUTURE({horizon_months}m)={future.upper():<6} model={requested_future.upper():<6} confidence={rating.future_confidence:.2f}\n  ↳ entropy gate: {gate.reason}; supercharge={'active' if gate.supercharged else 'inactive'}\n"))
+                        self.events.put(("dep",f"{item:<52} {current_label}={current.upper():<6} FUTURE({horizon_months}m)={future.upper():<6} model={requested_future.upper():<6} confidence={rating.future_confidence:.2f}\n  ↳ entropy gate: {gate.reason}; supercharge={'active' if gate.supercharged else 'inactive'}\n"))
                     if depth != "fast" and scan_mode in {"current","both"} and current in {"medium","high"}:
                         detail_jobs.append((item,"current",self._current_dependency_detail,(client,item,current,custom_prompt)))
                     if depth != "fast" and scan_mode in {"future","both"} and future in {"medium","high"}:
@@ -898,14 +969,14 @@ class App(ctk.CTk):
             api_key = self._get_api_key()
         except Exception as exc:
             return messagebox.showerror("API key error", clean_for_ui(exc, 1000))
-        prompt=self.man_prompt.get("1.0","end").strip(); deep_scan=bool(self.deep_scan_var.get()); model=MODEL_CHOICES[self.model_choice.get()]; self.man_output.delete("1.0","end"); self.findings_output.delete("1.0","end"); self.diff_output.delete("1.0","end")
+        prompt=self.man_prompt.get("1.0","end").strip(); deep_scan=bool(self.deep_scan_var.get()); model=self._selected_model(); self.man_output.delete("1.0","end"); self.findings_output.delete("1.0","end"); self.diff_output.delete("1.0","end")
         self._launch(self._manifest_worker,self.manifest_data,prompt,api_key,deep_scan,model)
 
     def _manifest_worker(self,manifest,custom_prompt,api_key,deep_scan,model):
         client=None
         escalated=[]
         try:
-            client=DaybreakClient(api_key,live_web=False,cancel_event=self.cancel_event,status_callback=lambda message:self.events.put(("status",message)),model_override=model)
+            client=DaybreakClient(api_key,live_web=False,cancel_event=self.cancel_event,status_callback=lambda message:self.events.put(("status",message)),model_override=model,base_url=self._api_base_url,protocol=self._api_protocol)
             with self.client_lock: self.active_client=client
             entries=sorted((entry for entry in manifest["entries"] if is_reviewable_source(entry)),key=source_review_priority)
             self.events.put(("man",f"Source-first triage: {len(entries)} reviewable files; application code precedes tests, metadata, and workflows.\n\n"))
