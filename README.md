@@ -725,3 +725,7 @@ In **Provider settings**, select **Ollama (local)**. The preset fills in:
 - **API key:** leave empty; local Ollama needs none.
 
 Save the encrypted provider profile and run an AI-assisted scan. Ollama must be running on the **same computer** as the desktop scanner. No cloud LLM endpoint is used for this profile. Its chat completions are validated against the existing Pydantic response schemas; smaller models can fail to produce conforming responses. The built-in deterministic Local Super Scan remains usable without Ollama. The Ollama profile does **not** enable live web search. Dependency advisory lookups and other network-enabled functions of the scanner can still access the network; this setting controls the model endpoint, not a global offline mode. Never expose the Ollama server to an untrusted network.
+
+### Built-in Ollama manager
+
+The app now has an **Ollama** button in the top toolbar. It detects a local Ollama instance in the background, lists installed models, can start an installed Ollama service, downloads a chosen model, and activates the selected model without API keys or manual provider configuration. Existing custom cloud provider profiles are not overridden during automatic discovery. Downloading Ollama itself remains a separate OS installation: model weights are not bundled with this source repository. Model download requires internet; inference uses the fixed loopback address.
