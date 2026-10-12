@@ -783,7 +783,7 @@ def run_advanced_tui(args: argparse.Namespace) -> int:
                 from chat_memory import MemoryStore
                 query=input("Semantic search query: ").strip()
                 if not query: continue
-                matches=MemoryStore().recall(query,k=8)
+                matches=MemoryStore().hybrid_recall(query,k=8)
                 if not matches: print("No saved memories found.")
                 for index,item in enumerate(matches,1):
                     print(f"\\n{index}. [{item.get('role','unknown')}] {item.get('content','')[:1200]}")
@@ -793,7 +793,7 @@ def run_advanced_tui(args: argparse.Namespace) -> int:
             try:
                 from urllib.request import build_opener, ProxyHandler
                 with build_opener(ProxyHandler({})).open("http://127.0.0.1:8080/v1/.well-known/ready",timeout=3) as response:
-                    print("Weaviate readiness HTTP",response.status)
+                    print("Weaviate readiness HTTP",response.status)\n                from chat_memory import MemoryStore\n                print("Memory statistics:", MemoryStore().memory_stats())
             except Exception as exc:
                 print("Weaviate not ready:",type(exc).__name__)
         elif action=="4":
