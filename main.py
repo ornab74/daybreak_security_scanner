@@ -416,7 +416,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     modes.add_argument("--cli", action="store_true", help="run the automation-friendly command-line interface")
     modes.add_argument("--tui", action="store_true", help="open the interactive terminal dashboard")
     modes.add_argument("--gui", action="store_true", help="open the CustomTkinter layered AI interface")
-    parser.add_argument("--with-weaviate", action="store_true", help="start local Docker Weaviate for --gui (requires Docker Compose)")
+    parser.add_argument("--no-weaviate", action="store_true", help="skip automatic local Weaviate startup in GUI mode")
     parser.add_argument("target", nargs="?", default=".", help="directory to scan (default: current directory)")
     parser.add_argument("--format", choices=("text", "json", "sarif", "html"), default="text")
     parser.add_argument("--output", type=Path, help="write report atomically to this file")
@@ -786,16 +786,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("Experimental Daybreak research track (not yet production detectors):")
         print("\n".join(f"{i:2}. {name}\n    {description}" for i, (name, description) in enumerate(EXPERIMENTAL_IDEAS, 1)))
         return 0
-    if args.with_weaviate:
-        if not args.gui:
-            print("error: --with-weaviate requires --gui", file=sys.stderr)
-            return 2
-        try:
-            start_local_weaviate()
-        except RuntimeError as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 2
     if args.gui:
+        if not args.no_weaviate:
+            try:
+                start_local_weaviate()
+            except RuntimeError as exc:
+                print(f"warning: Weaviate could not start: {exc}", file=sys.stderr)
+                print("GUI will continue; semantic memory requires Weaviate.", file=sys.stderr)
         return run_gui()
     if args.tui:
         return run_tui(args)
