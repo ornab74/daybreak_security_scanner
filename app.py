@@ -138,7 +138,7 @@ class DaybreakClient:
     def __init__(self, api_key: str, live_web: bool, cancel_event=None, status_callback=None, model_override: str | None = None, base_url: str = "https://api.openai.com/v1", protocol: str = "responses"):
         self.http_client = build_httpx_client()
         # One retry owner only: the SDK layer is disabled so attempts cannot multiply.
-        self.client = OpenAI(api_key=api_key, base_url=base_url, http_client=self.http_client, max_retries=0)
+        self.client = OpenAI(api_key=api_key or "ollama", base_url=base_url, http_client=self.http_client, max_retries=0)
         self.protocol = protocol
         self.live_web = live_web and protocol == "responses"
         self.cancel_event = cancel_event
@@ -688,7 +688,7 @@ class App(ctk.CTk):
 
     def _refresh_key_status(self):
         saved = self.provider_store.exists() or has_saved_key()
-        self.key_status.configure(text="● API READY" if saved else "○ LOCAL ONLY")
+        self.key_status.configure(text="● AI READY" if saved else "○ LOCAL ONLY")
     def _save_key(self):
         try:
             save_api_key(self.key_entry.get()); self.key_entry.delete(0,"end"); self._refresh_key_status()
@@ -711,25 +711,25 @@ class App(ctk.CTk):
         ctk.CTkLabel(window,text="Provider preset",font=ctk.CTkFont(weight="bold")).grid(row=0,column=0,padx=(22,8),pady=(22,8),sticky="w")
         menu=ctk.CTkOptionMenu(window,values=list(PROVIDER_PRESETS),variable=preset); menu.grid(row=0,column=1,padx=(4,22),pady=(22,8),sticky="ew")
         field(1,"Profile label",stored.label if stored else "Primary")
-        field(2,"HTTPS API endpoint",stored.base_url if stored else PROVIDER_PRESETS["OpenAI"][0])
+        field(2,"API endpoint",stored.base_url if stored else PROVIDER_PRESETS["OpenAI"][0])
         field(3,"Model ID",stored.model if stored else PROVIDER_PRESETS["OpenAI"][1])
         field(4,"API key","",True)
         protocol=ctk.StringVar(value=stored.protocol if stored else "responses")
         ctk.CTkLabel(window,text="Protocol",font=ctk.CTkFont(weight="bold")).grid(row=5,column=0,padx=(22,8),pady=8,sticky="w")
         ctk.CTkOptionMenu(window,values=["responses","chat_completions"],variable=protocol).grid(row=5,column=1,padx=(4,22),pady=8,sticky="ew")
-        note=ctk.CTkLabel(window,text="Kimi K2.5 is the currently documented DigitalOcean model. Kimi K3 can be entered as a custom model ID after your provider officially exposes it. Meta Muse Spark 1.1 preview routing values must be copied from the Meta console; Daybreak will not guess them. Custom endpoints must be public HTTPS and are revalidated before use.",wraplength=700,justify="left",anchor="w")
+        note=ctk.CTkLabel(window,text="Local Ollama uses http://127.0.0.1:11434/v1, chat_completions, and no API key. Run ollama pull <model> before scanning. Only the Ollama preset permits loopback HTTP; remote providers still require public HTTPS. Web search is unavailable with Ollama.",wraplength=700,justify="left",anchor="w")
         note.grid(row=6,column=0,columnspan=2,padx=22,pady=12,sticky="ew")
         def apply_preset(choice):
             endpoint,model,style=PROVIDER_PRESETS[choice]
-            for label,value in (("HTTPS API endpoint",endpoint),("Model ID",model)):
+            for label,value in (("API endpoint",endpoint),("Model ID",model)):
                 fields[label].delete(0,"end"); fields[label].insert(0,value)
             protocol.set(style)
         menu.configure(command=apply_preset)
         def save():
             try:
                 existing_key=stored.api_key if stored else ""
-                profile=ProviderProfile(fields["Profile label"].get(),preset.get(),fields["HTTPS API endpoint"].get(),fields["Model ID"].get(),fields["API key"].get().strip() or existing_key,protocol.get())
-                self.provider_store.save(profile); self._refresh_key_status(); window.destroy()
+                profile=ProviderProfile(fields["Profile label"].get(),preset.get(),fields["API endpoint"].get(),fields["Model ID"].get(),fields["API key"].get().strip() or existing_key,protocol.get())
+                self.provider_store.save(profile); self._provider_model=profile.model; self._refresh_key_status(); window.destroy()
             except Exception as exc: messagebox.showerror("Secure provider settings",clean_for_ui(exc,1500),parent=window)
         actions=ctk.CTkFrame(window,fg_color="transparent"); actions.grid(row=7,column=0,columnspan=2,padx=22,pady=18,sticky="ew")
         ctk.CTkButton(actions,text="Cancel",command=window.destroy,fg_color="transparent",border_width=1).pack(side="left")
@@ -769,7 +769,7 @@ class App(ctk.CTk):
             return entered
         profile=self.provider_store.load()
         if profile:
-            self._api_base_url=profile.base_url; self._api_protocol=profile.protocol; self.model_choice.set(profile.model); self.model_status.configure(text=f"{profile.provider} · {profile.protocol}"); self._provider_model=profile.model; return profile.api_key
+            self._api_base_url=profile.base_url; self._api_protocol=profile.protocol; self.model_choice.set(profile.model); self.model_status.configure(text=f"{profile.provider} · {profile.protocol}"); self._provider_model=profile.model; return profile.api_key or "ollama"
         saved=load_api_key()
         if not saved: raise SecureStoreError("Enter an API key or save one securely first.")
         self._api_base_url="https://api.openai.com/v1"; self._api_protocol="responses"; self._provider_model=None
