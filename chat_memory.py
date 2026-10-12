@@ -90,9 +90,10 @@ class MemoryStore:
         _ensure_schema()
         vector=embed(query,embedding_model)
         # GraphQL arguments are JSON literals (safe for both vector and scope).
-        gql='{ Get { '+CLASS_NAME+'(nearVector:{vector:'+json.dumps(vector)+
-            '}, where:{path:["scope"],operator:Equal,valueText:'+json.dumps(self.scope)+
-            '}, limit:'+str(min(max(k,1),12))+') {content role session _additional {id distance}} } }'
+        gql = ('{ Get { ' + CLASS_NAME + '(nearVector:{vector:' + json.dumps(vector) +
+               '}, where:{path:["scope"],operator:Equal,valueText:' + json.dumps(self.scope) +
+               '}, limit:' + str(min(max(k, 1), 12)) +
+               ') {content role session _additional {id distance}} } }')
         result=_post(WEAVIATE+"/v1/graphql",{"query":gql})
         if result.get("errors"): raise MemoryError("Weaviate semantic search failed.")
         return result.get("data",{}).get("Get",{}).get(CLASS_NAME,[]) or []
