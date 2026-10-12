@@ -14,6 +14,9 @@ import json
 import math
 import os
 import re
+import shutil
+import socket
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -413,6 +416,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     modes.add_argument("--cli", action="store_true", help="run the automation-friendly command-line interface")
     modes.add_argument("--tui", action="store_true", help="open the interactive terminal dashboard")
     modes.add_argument("--gui", action="store_true", help="open the CustomTkinter layered AI interface")
+    parser.add_argument("--with-weaviate", action="store_true", help="start local Docker Weaviate for --gui (requires Docker Compose)")
     parser.add_argument("target", nargs="?", default=".", help="directory to scan (default: current directory)")
     parser.add_argument("--format", choices=("text", "json", "sarif", "html"), default="text")
     parser.add_argument("--output", type=Path, help="write report atomically to this file")
@@ -729,6 +733,35 @@ def run_tui(args: argparse.Namespace) -> int:
         return 2
 
 
+def start_local_weaviate() -> None:
+    """Start the repository's loopback-only Weaviate service using Docker Compose.
+
+    Weaviate is a separate database process; it cannot run inside Python.
+    This action is explicit, never triggered by CLI/TUI scans.
+    """
+    compose_file = Path(__file__).resolve().parent / "docker-compose.weaviate.yml"
+    if not compose_file.is_file():
+        raise RuntimeError("Missing docker-compose.weaviate.yml next to main.py")
+    if not shutil.which("docker"):
+        raise RuntimeError("Docker is not installed or is not on PATH")
+    try:
+        with socket.create_connection(("127.0.0.1", 8080), timeout=1):
+            print("Weaviate port 8080 is already listening; using existing service.")
+            return
+    except OSError:
+        pass
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "-f", str(compose_file), "up", "-d", "weaviate"],
+            capture_output=True, text=True, timeout=90, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("Could not launch Docker Compose Weaviate") from exc
+    if result.returncode:
+        raise RuntimeError("Docker Compose could not start Weaviate: " + result.stderr[-800:])
+    print("Weaviate container started; it may take a few seconds to become ready.")
+
+
 def run_gui() -> int:
     try:
         from app import App
@@ -753,6 +786,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("Experimental Daybreak research track (not yet production detectors):")
         print("\n".join(f"{i:2}. {name}\n    {description}" for i, (name, description) in enumerate(EXPERIMENTAL_IDEAS, 1)))
         return 0
+    if args.with_weaviate:
+        if not args.gui:
+            print("error: --with-weaviate requires --gui", file=sys.stderr)
+            return 2
+        try:
+            start_local_weaviate()
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
     if args.gui:
         return run_gui()
     if args.tui:
