@@ -729,3 +729,22 @@ Save the encrypted provider profile and run an AI-assisted scan. Ollama must be 
 ### Built-in Ollama manager
 
 The app now has an **Ollama** button in the top toolbar. It detects a local Ollama instance in the background, lists installed models, can start an installed Ollama service, downloads a chosen model, and activates the selected model without API keys or manual provider configuration. Existing custom cloud provider profiles are not overridden during automatic discovery. Downloading Ollama itself remains a separate OS installation: model weights are not bundled with this source repository. Model download requires internet; inference uses the fixed loopback address.
+
+## AI Chat + Weaviate memory (opt-in)
+
+Daybreak includes an **AI Chat + Memory** tab. It saves a local SQLite conversation transcript under the OS user-data directory and can optionally store embeddings in a self-hosted Weaviate database. The chat model uses the configured model provider (select local Ollama for local inference). Semantic memory is **off by default**, and only enabled when the user selects **Remember conversation in Weaviate**. Retrieval uses up to five nearest saved messages, scoped to this local installation's UUID. Recalled content is marked as untrusted context, not security evidence.
+
+### Start Weaviate
+
+Install Docker and Docker Compose, then from the project directory:
+
+```bash
+docker compose -f docker-compose.weaviate.yml up -d
+ollama pull nomic-embed-text
+ollama pull qwen2.5-coder:7b
+python app.py --gui
+```
+
+Weaviate is bound only to `127.0.0.1:8080`; the embedding and generation API runs at `127.0.0.1:11434`. Install and run Ollama separately. In Daybreak, open **Ollama**, select a model, then open **AI Chat + Memory**. Enable memory if you want semantic recall; disabling it prevents new vector memory writes and recall, but existing saved memories remain until erased. Click **Delete chat** to erase one chat's stored history and associated vectors, or **Erase all memory** to erase all Daybreak chat history and tracked vectors. Weaviate must be reachable for vector deletion; the interface shows errors rather than silently skipping failures.
+
+**Data protection:** Chat history is stored locally in an ordinary SQLite database, not encrypted. Treat it as sensitive. Do not enter credentials or private data unless you are comfortable storing them there. The local Docker Weaviate instance has anonymous access enabled and must never be exposed beyond loopback. Docker volume deletion is separate from in-app memory erasure. Weaviate and Ollama can consume substantial disk, RAM, and GPU memory. Weaviate stores embeddings and text, and local semantic retrieval is not guaranteed to return all relevant entries.
