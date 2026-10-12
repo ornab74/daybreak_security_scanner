@@ -22,6 +22,7 @@ MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$")
 
 PROVIDER_PRESETS = {
     "OpenAI": ("https://api.openai.com/v1", "gpt-5.6-terra", "responses"),
+    "Ollama (local)": ("http://127.0.0.1:11434/v1", "qwen2.5-coder:7b", "chat_completions"),
     "DigitalOcean Gradient · Kimi K2.5": (
         "https://inference.do-ai.run/v1", "kimi-k2.5", "chat_completions"
     ),
@@ -48,18 +49,29 @@ def _is_public_ip(value: str) -> bool:
                     address.is_multicast, address.is_reserved, address.is_unspecified))
 
 
-def validate_endpoint(value: str, *, resolve_dns: bool = True) -> str:
+def validate_endpoint(value: str, *, resolve_dns: bool = True, allow_local: bool = False) -> str:
     value = value.strip()
     if len(value) > 2048:
         raise ValueError("API endpoint is too long.")
     parsed = urlsplit(value)
-    if parsed.scheme.lower() != "https":
-        raise ValueError("API endpoint must use HTTPS.")
+    scheme = parsed.scheme.lower()
+    if scheme != "https" and not (allow_local and scheme == "http"):
+        raise ValueError("API endpoint must use HTTPS (except loopback-only local Ollama).")
     if not parsed.hostname or parsed.username or parsed.password:
         raise ValueError("API endpoint must have a host and must not contain credentials.")
     if parsed.query or parsed.fragment:
         raise ValueError("API endpoint must not contain a query string or fragment.")
     host = parsed.hostname.rstrip(".").lower()
+    if allow_local:
+        # Never allow LAN, public, or DNS-based targets in this exception.
+        if host not in {"localhost", "127.0.0.1", "::1"}:
+            raise ValueError("Local Ollama endpoint must use localhost or a loopback IP.")
+        if parsed.port != 11434:
+            raise ValueError("Local Ollama endpoint must use port 11434.")
+        if parsed.path.rstrip("/") != "/v1":
+            raise ValueError("Local Ollama endpoint must end with /v1.")
+        authority = "[::1]" if host == "::1" else host
+        return urlunsplit((scheme, f"{authority}:11434", "/v1", "", ""))
     if host == "localhost" or host.endswith(".localhost"):
         raise ValueError("Local API endpoints are blocked to prevent SSRF.")
     try:
@@ -90,9 +102,12 @@ def validate_profile(profile: ProviderProfile, *, resolve_dns: bool = True) -> P
         raise ValueError("Model ID contains unsupported characters or is too long.")
     if profile.protocol not in {"responses", "chat_completions"}:
         raise ValueError("Unsupported API protocol.")
-    if not key or len(key) > 4096 or "\x00" in key:
+    if (not key and provider != "Ollama (local)") or len(key) > 4096 or "\x00" in key:
         raise ValueError("API key is empty or invalid.")
-    return ProviderProfile(label, provider, validate_endpoint(profile.base_url, resolve_dns=resolve_dns), model, key, profile.protocol)
+    if provider == "Ollama (local)" and profile.protocol != "chat_completions":
+        raise ValueError("Local Ollama requires chat_completions.")
+    endpoint = validate_endpoint(profile.base_url, resolve_dns=resolve_dns, allow_local=provider == "Ollama (local)")
+    return ProviderProfile(label, provider, endpoint, model, key, profile.protocol)
 
 
 class ProviderStore:

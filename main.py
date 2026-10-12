@@ -14,6 +14,9 @@ import json
 import math
 import os
 import re
+import shutil
+import socket
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -412,7 +415,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--cli", action="store_true", help="run the automation-friendly command-line interface")
     modes.add_argument("--tui", action="store_true", help="open the interactive terminal dashboard")
-    modes.add_argument("--gui", action="store_true", help="open the CustomTkinter layered AI interface")
+    modes.add_argument("--gui", action="store_true", help="open the advanced GUI with Ollama chat and Weaviate memory")
+    modes.add_argument("--advanced-tui", action="store_true", help="open advanced terminal workspace with scans and Weaviate memory search")
+    modes.add_argument("--advanced-gui", action="store_true", help="open advanced GUI with Ollama chat and Weaviate memory")
+    parser.add_argument("--no-weaviate", action="store_true", help="skip local Weaviate startup in interactive modes")
     parser.add_argument("target", nargs="?", default=".", help="directory to scan (default: current directory)")
     parser.add_argument("--format", choices=("text", "json", "sarif", "html"), default="text")
     parser.add_argument("--output", type=Path, help="write report atomically to this file")
@@ -729,6 +735,73 @@ def run_tui(args: argparse.Namespace) -> int:
         return 2
 
 
+def start_local_weaviate() -> None:
+    """Start the repository's loopback-only Weaviate service using Docker Compose.
+
+    Weaviate is a separate database process; it cannot run inside Python.
+    This action is explicit, never triggered by CLI/TUI scans.
+    """
+    compose_file = Path(__file__).resolve().parent / "docker-compose.weaviate.yml"
+    if not compose_file.is_file():
+        raise RuntimeError("Missing docker-compose.weaviate.yml next to main.py")
+    if not shutil.which("docker"):
+        raise RuntimeError("Docker is not installed or is not on PATH")
+    try:
+        with socket.create_connection(("127.0.0.1", 8080), timeout=1):
+            print("Weaviate port 8080 is already listening; using existing service.")
+            return
+    except OSError:
+        pass
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "-f", str(compose_file), "up", "-d", "weaviate"],
+            capture_output=True, text=True, timeout=90, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("Could not launch Docker Compose Weaviate") from exc
+    if result.returncode:
+        raise RuntimeError("Docker Compose could not start Weaviate: " + result.stderr[-800:])
+    print("Weaviate container started; it may take a few seconds to become ready.")
+
+
+def run_advanced_tui(args: argparse.Namespace) -> int:
+    """Interactive terminal workbench: scanner plus explicit semantic memory search."""
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        print("error: --advanced-tui requires an interactive terminal", file=sys.stderr)
+        return 2
+    while True:
+        print("\\nDAYBREAK ADVANCED TUI | [1] Security scan [2] Search Weaviate memory [3] Memory status [4] Exit")
+        try:
+            action=input("Select: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return 0
+        if action=="1":
+            result=run_tui(args)
+            if result and result!=130: print("TUI scan exited with status",result)
+        elif action=="2":
+            try:
+                from chat_memory import MemoryStore
+                query=input("Semantic search query: ").strip()
+                if not query: continue
+                matches=MemoryStore().hybrid_recall(query,k=8)
+                if not matches: print("No saved memories found.")
+                for index,item in enumerate(matches,1):
+                    print(f"\\n{index}. [{item.get('role','unknown')}] {item.get('content','')[:1200]}")
+            except Exception as exc:
+                print(f"Memory search unavailable: {type(exc).__name__}: {exc}")
+        elif action=="3":
+            try:
+                from urllib.request import build_opener, ProxyHandler
+                with build_opener(ProxyHandler({})).open("http://127.0.0.1:8080/v1/.well-known/ready",timeout=3) as response:
+                    print("Weaviate readiness HTTP",response.status)\n                from chat_memory import MemoryStore\n                print("Memory statistics:", MemoryStore().memory_stats())
+            except Exception as exc:
+                print("Weaviate not ready:",type(exc).__name__)
+        elif action=="4":
+            return 0
+        else:
+            print("Choose 1, 2, 3, or 4.")
+
+
 def run_gui() -> int:
     try:
         from app import App
@@ -753,9 +826,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("Experimental Daybreak research track (not yet production detectors):")
         print("\n".join(f"{i:2}. {name}\n    {description}" for i, (name, description) in enumerate(EXPERIMENTAL_IDEAS, 1)))
         return 0
-    if args.gui:
-        return run_gui()
-    if args.tui:
+    if args.gui or args.advanced_gui or args.advanced_tui or args.tui:
+        if not args.no_weaviate:
+            try:
+                start_local_weaviate()
+            except RuntimeError as exc:
+                print(f"warning: Weaviate could not start: {exc}", file=sys.stderr)
+                print("Interactive mode will continue; semantic memory requires Weaviate.", file=sys.stderr)
+        if args.gui or args.advanced_gui:
+            return run_gui()
+        if args.advanced_tui:
+            return run_advanced_tui(args)
         return run_tui(args)
     return run_cli(args)
 

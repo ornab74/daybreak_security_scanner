@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from provider_store import PROVIDER_PRESETS, ProviderProfile, ProviderStore, validate_endpoint
+from provider_store import PROVIDER_PRESETS, ProviderProfile, ProviderStore, validate_endpoint, validate_profile
 
 
 class ProviderStoreTests(unittest.TestCase):
@@ -17,6 +17,30 @@ class ProviderStoreTests(unittest.TestCase):
         for value in invalid:
             with self.subTest(value=value), self.assertRaises(ValueError):
                 validate_endpoint(value, resolve_dns=False)
+
+    def test_local_ollama_endpoint_is_explicit_and_loopback_only(self):
+        self.assertEqual(
+            validate_endpoint("http://127.0.0.1:11434/v1", resolve_dns=False, allow_local=True),
+            "http://127.0.0.1:11434/v1",
+        )
+        self.assertEqual(
+            validate_endpoint("http://localhost:11434/v1/", resolve_dns=False, allow_local=True),
+            "http://localhost:11434/v1",
+        )
+        for endpoint in ("http://192.168.1.5:11434/v1", "http://example.com:11434/v1",
+                         "http://127.0.0.1:1234/v1", "http://127.0.0.1:11434/api",
+                         "http://127.0.0.1:11434/v1?secret=x"):
+            with self.subTest(endpoint=endpoint), self.assertRaises(ValueError):
+                validate_endpoint(endpoint, resolve_dns=False, allow_local=True)
+
+    def test_local_ollama_profile_without_key(self):
+        profile = ProviderProfile("Local", "Ollama (local)", "http://127.0.0.1:11434/v1",
+                                  "qwen2.5-coder:7b", "", "chat_completions")
+        self.assertEqual(validate_profile(profile, resolve_dns=False), profile)
+        with self.assertRaises(ValueError):
+            validate_profile(ProviderProfile("Remote", "Custom OpenAI-compatible",
+                             "http://127.0.0.1:11434/v1", "model", "", "chat_completions"),
+                             resolve_dns=False)
 
     def test_documented_presets_are_not_speculative(self):
         self.assertEqual(PROVIDER_PRESETS["DigitalOcean Gradient · Kimi K2.5"][1], "kimi-k2.5")

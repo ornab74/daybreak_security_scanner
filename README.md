@@ -1,5 +1,7 @@
 # Daybreak Super Scanner
 
+> **Complete guide:** deterministic security scanning, advanced GUI/TUI, local Ollama inference, SQLite chat history, and opt-in Weaviate semantic memory. This README describes the development branch `feature/local-ollama-provider`; live end-to-end Docker/Ollama tests are not yet confirmed.
+
 `main.py` is now the unified launcher for three interfaces. Its scanner core runs
 14 local evidence engines without executing target code or sending source
 off-machine.
@@ -8,6 +10,8 @@ off-machine.
 python3 main.py --cli /path/to/project
 python3 main.py --tui /path/to/project
 python3 main.py --gui
+python3 main.py --advanced-gui
+python3 main.py --advanced-tui
 python3 main.py --cli . --format sarif --output daybreak.sarif
 python3 main.py --cli . --severity medium --fail-on high
 python3 main.py --list-engines
@@ -21,6 +25,7 @@ python3 main.py --list-ideas
   responsive finding details, redacted source context, live rescans, severity and
   confidence filters, text search, three sort modes, baseline visibility, and
   timestamped JSON/SARIF export. Press `?` inside it for help.
+- `--advanced-gui` opens the existing full CustomTkinter workbench with AI chat and memory; `--advanced-tui` adds a terminal menu for scanning, memory search, and status. Interactive modes attempt to start loopback-only Docker Weaviate by default; pass `--no-weaviate` to skip startup. If Docker is unavailable, they continue without semantic memory.
 - `--gui` launches the CustomTkinter security workbench. Its **Local Super Scan**
   tab runs the same 14 deterministic engines as CLI/TUI without an API key, with
   severity/confidence filters, color-coded evidence, and JSON/SARIF export. The
@@ -705,3 +710,246 @@ authentication, billing, permission, and invalid-request failures remain visible
 ## Production hardening ideas
 
 For a stronger production system, add repository-aware symbol/call-graph context, deterministic static-analysis adapters (Semgrep/CodeQL/etc.), patch application in a disposable worktree, unit-test execution in a sandbox, and a final diff re-scan before any human-approved merge.
+
+
+## Local Ollama (no cloud model API key)
+
+Install [Ollama](https://ollama.com/), start its local service, and download a model capable of following JSON schema instructions:
+
+```bash
+ollama pull qwen2.5-coder:7b
+ollama serve  # only if Ollama is not already running
+python main.py --advanced-gui
+```
+
+In **Provider settings**, select **Ollama (local)**. The preset fills in:
+
+- **API endpoint:** `http://127.0.0.1:11434/v1`
+- **Model ID:** `qwen2.5-coder:7b` (replace with any model you have pulled)
+- **Protocol:** `chat_completions`
+- **API key:** leave empty; local Ollama needs none.
+
+Save the encrypted provider profile and run an AI-assisted scan. Ollama must be running on the **same computer** as the desktop scanner. No cloud LLM endpoint is used for this profile. Its chat completions are validated against the existing Pydantic response schemas; smaller models can fail to produce conforming responses. The built-in deterministic Local Super Scan remains usable without Ollama. The Ollama profile does **not** enable live web search. Dependency advisory lookups and other network-enabled functions of the scanner can still access the network; this setting controls the model endpoint, not a global offline mode. Never expose the Ollama server to an untrusted network.
+
+### Built-in Ollama manager
+
+The app now has an **Ollama** button in the top toolbar. It detects a local Ollama instance in the background, lists installed models, can start an installed Ollama service, downloads a chosen model, and activates the selected model without API keys or manual provider configuration. Existing custom cloud provider profiles are not overridden during automatic discovery. Downloading Ollama itself remains a separate OS installation: model weights are not bundled with this source repository. Model download requires internet; inference uses the fixed loopback address.
+
+## AI Chat + Weaviate memory (opt-in)
+
+Daybreak includes an **AI Chat + Memory** tab. It saves a local SQLite conversation transcript under the OS user-data directory and can optionally store embeddings in a self-hosted Weaviate database. The chat model uses the configured model provider (select local Ollama for local inference). Semantic memory is **off by default**, and only enabled when the user selects **Remember conversation in Weaviate**. Retrieval combines up to five semantic Weaviate matches with exact-substring SQLite history matches, deduplicates results, and scopes semantic retrieval to this local installation's UUID. Recalled content is marked as untrusted context, not security evidence.
+
+### Start Weaviate
+
+Install Docker and Docker Compose, then from the project directory:
+
+```bash
+docker compose -f docker-compose.weaviate.yml up -d
+ollama pull nomic-embed-text
+ollama pull qwen2.5-coder:7b
+python main.py --advanced-gui
+```
+
+Weaviate is bound only to `127.0.0.1:8080`; the embedding and generation API runs at `127.0.0.1:11434`. Install and run Ollama separately. In Daybreak, open **Ollama**, select a model, then open **AI Chat + Memory**. Enable memory if you want semantic recall; disabling it prevents new vector memory writes and recall, but existing saved memories remain until erased. Click **Delete chat** to erase one chat's stored history and associated vectors, or **Erase all memory** to erase all Daybreak chat history and tracked vectors. Weaviate must be reachable for vector deletion; the interface shows errors rather than silently skipping failures.
+
+**Data protection:** Chat history is stored locally in an ordinary SQLite database, not encrypted. Treat it as sensitive. Do not enter credentials or private data unless you are comfortable storing them there. The local Docker Weaviate instance has anonymous access enabled and must never be exposed beyond loopback. Docker volume deletion is separate from in-app memory erasure. Weaviate and Ollama can consume substantial disk, RAM, and GPU memory. Weaviate stores embeddings and text, and local semantic retrieval is not guaranteed to return all relevant entries.
+
+
+## Complete advanced GUI, TUI, Ollama, and Weaviate guide
+
+### Quick start from a fresh checkout
+
+Use the feature branch containing the local model and memory integrations:
+
+```bash
+git clone -b feature/local-ollama-provider https://github.com/ornab74/daybreak_security_scanner.git
+cd daybreak_security_scanner
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+On Windows PowerShell, create the environment with `py -m venv .venv` and run `.\.venv\Scripts\python.exe -m pip install -r requirements.txt` without requiring script activation. `platformdirs` is already listed in `requirements.txt`. The `ollama` and `weaviate-client` Python SDKs are **not required**: Daybreak currently uses the OpenAI-compatible API and standard-library HTTP requests.
+
+Install the Ollama server separately from [ollama.com](https://ollama.com/download), then pull both models:
+
+```bash
+ollama pull qwen2.5-coder:7b
+ollama pull nomic-embed-text
+ollama list
+```
+
+Ensure Ollama is serving at `127.0.0.1:11434` (run `ollama serve` only if it is not already running). Install and start Docker Desktop or the Docker Engine with Compose. Start the full graphical application:
+
+```bash
+python main.py --advanced-gui
+```
+
+The launcher tries to start Weaviate with the checked-in `docker-compose.weaviate.yml`. **Docker is still required**: “embedded” means *automatically managed from the Python entry point*, not a Python-native in-process Weaviate server. If startup fails, the GUI still opens and local deterministic scanning still works.
+
+### Interface and launch matrix
+
+| Command | Interface | Memory integration | Notes |
+| --- | --- | --- | --- |
+| `python main.py --advanced-gui` | Full CustomTkinter workbench | AI Chat + Memory tab, hybrid search, delete/erase | Reuses existing GUI rather than a new visual design |
+| `python main.py --advanced-tui` | Terminal menu | Search memory and inspect Weaviate status | Menu launches existing curses scanner |
+| `python main.py --gui` | Standard GUI | Same chat and memory features | Alias for the current graphical workbench |
+| `python main.py --tui` | Standard curses TUI | Starts Weaviate by default, but scanner UI is scan-focused | Requires an interactive terminal and curses |
+| `python main.py --cli .` | Noninteractive scanner | None | Does not start Weaviate; suitable for CI |
+| `python main.py --advanced-gui --no-weaviate` | GUI without automatic database startup | Existing Weaviate may still be used if already running | Opts out of startup, **not** memory access |
+
+When no interface flag is supplied, `main.py` runs CLI mode. The deterministic scanner core does not require the GUI Python dependencies, Ollama, or Weaviate.
+
+### What starts automatically
+
+`main.py` checks port `127.0.0.1:8080`. If something is already listening, it skips starting a second container. Otherwise, it checks for Docker and invokes:
+
+```bash
+docker compose -f docker-compose.weaviate.yml up -d weaviate
+```
+
+The port check alone does **not** prove the listening service is Weaviate. To verify service readiness, use:
+
+```bash
+curl http://127.0.0.1:8080/v1/.well-known/ready
+curl http://127.0.0.1:11434/api/tags
+docker compose -f docker-compose.weaviate.yml ps
+```
+
+The Compose file pins Weaviate `1.33.1`, binds the HTTP service to loopback, enables anonymous access, disables built-in vectorizers, and stores data in the named Docker volume `daybreak_weaviate`. Do **not** publish port 8080 beyond loopback. Stop the container with `docker compose -f docker-compose.weaviate.yml down`. The volume normally persists after `down`; deleting it is a separate, destructive action.
+
+### Ollama provider settings and management
+
+In the GUI, choose **Ollama (local)** in provider settings or use the **Ollama** toolbar manager to detect the service, list models, pull models, and select one. The preset is:
+
+| Setting | Value |
+| --- | --- |
+| Base URL | `http://127.0.0.1:11434/v1` |
+| Generation model | `qwen2.5-coder:7b` |
+| Protocol | `chat_completions` |
+| Cloud API key | Not required |
+| Embedding model | `nomic-embed-text` via `/api/embed` |
+
+Provider validation only permits local Ollama at localhost/loopback port 11434 and the `/v1` path. The manager calls the fixed local `/api/tags` endpoint and uses a shell-free subprocess argument array for `ollama pull`. Installing the Python SDK does not install the Ollama server. Small local generation models may not consistently follow strict JSON schemas used by some AI-assisted scanning workflows. Local Ollama does not automatically enable web search, and separate dependency-advisory features may still make network requests.
+
+### Memory architecture: local history versus semantic vectors
+
+```text
+GUI user prompt / TUI memory query
+              |
+              +--> SQLite chat.sqlite3 -----------+
+              |    conversation transcripts       | exact substring search
+              |                                   |
+              +--> Ollama /api/embed               |
+                   nomic-embed-text                |
+                          |                        |
+                          v                        |
+                   Weaviate DaybreakMemory         |
+                   supplied vectors + text         |
+                          | semantic nearVector    |
+                          +------------+-----------+
+                                       |
+                              hybrid_recall()
+                              deduplicate + limit
+                                       |
+                              AI prompt context / UI
+```
+
+`chat_memory.py` stores **all successfully completed chat messages in local SQLite**. The database lives under `platformdirs.user_data_dir("DaybreakSecurityScanner", "Local")` as `chat.sqlite3`. The SQLite tables are `config`, `conversations`, and `messages`. Each message records an ID, session ID, role, content, timestamp, and optional Weaviate vector ID. Conversation titles are derived from the first saved user message. **SQLite chat content is plaintext**, unlike the separately encrypted provider profile.
+
+The **Remember conversation in Weaviate (opt in)** checkbox defaults to off. When enabled, `save(..., remember=True)` embeds the text with `nomic-embed-text` and creates a Weaviate object containing `scope`, `session`, `role`, `content`, and `created`. Its class is `DaybreakMemory` and `vectorizer` is `none`: Daybreak supplies the vectors itself. The application also exposes a **Semantic recall** checkbox, but recall during chat requires the memory opt-in checkbox to be enabled. Turning the checkbox off does not delete previously indexed vectors.
+
+A chat request loads the last 16 SQLite messages from the selected conversation. When semantic recall is enabled, it requests up to five hybrid memory matches and includes them as untrusted context for the selected generation provider. This is retrieval augmentation, **not** retraining or fine-tuning. Chat saves the user prompt and generated assistant response after successful model generation; errors may leave an attempted prompt unsaved.
+
+### Advanced hybrid memory: what it actually does
+
+`MemoryStore.recall(query, k)` embeds the query, calls Weaviate GraphQL `nearVector`, and filters results by the installation's UUID `scope`. `MemoryStore.search_history(query, k, session=None)` uses SQLite `LIKE` to find exact substring matches in the local journal, with SQL wildcard characters escaped. `MemoryStore.hybrid_recall(query, k, session=None)` merges semantic results **first**, then lexical results, removes duplicates by session/role/content, and returns up to `k` results (maximum 12).
+
+This is a simple two-source merge, **not** a weighted hybrid scoring model. There is no reciprocal-rank fusion, cross-encoder reranking, fact extraction, recency decay, contradiction handling, or memory summarization yet. If Weaviate or Ollama embeddings are unavailable, matching SQLite results can still be returned. If neither source returns anything and semantic search failed, the error is surfaced. Search results may contain sensitive original message text, not merely opaque vectors.
+
+Useful Python API examples:
+
+```python
+from chat_memory import MemoryStore
+
+memory = MemoryStore()
+session = memory.new_chat()
+memory.save(session, "user", "Our service validates JWT audiences.", remember=False)
+memory.save(session, "assistant", "Check issuer and audience validation.", remember=True)
+
+print(memory.messages(session))
+print(memory.search_history("JWT", k=10))
+print(memory.recall("authentication controls", k=5))
+print(memory.hybrid_recall("authentication controls", k=5))
+print(memory.hybrid_recall("JWT", k=5, session=session))
+print(memory.memory_stats())
+```
+
+The `remember=True` call requires Ollama embeddings and Weaviate to be running. `memory_stats()` reports counts of conversations, messages, locally tracked vector IDs, and SQLite-only messages; it does **not** independently audit the Weaviate database for orphan objects.
+
+### Using memory in the advanced TUI
+
+```bash
+python main.py --advanced-tui
+```
+
+The current menu offers **Security scan**, **Search Weaviate memory**, **Memory status**, and **Exit**. Search calls `MemoryStore.hybrid_recall(..., k=8)` and prints up to eight retrieved items. Memory status calls Weaviate's readiness endpoint and prints local memory statistics. The scanner option enters the existing curses interface; it does not currently expose a full conversational Ollama terminal chat. Run this mode in a real terminal rather than a CI process or noninteractive shell.
+
+### Deleting memory and protecting sensitive data
+
+The GUI offers **Delete chat** and **Erase all memory**. The memory store deletes tracked Weaviate vector objects before deleting corresponding SQLite rows. If Weaviate is offline, deletion can fail rather than silently dropping the local references. A crash between vector insertion and SQLite recording may leave an orphaned vector; there is no automated reconciliation yet. Deleting chats does not automatically delete the Docker volume, filesystem backups, or unrelated objects. Treat backup and volume retention as separate operational responsibilities.
+
+The installation scope UUID is an application query filter, **not authentication or strong tenant isolation**. Weaviate uses anonymous local access, and another process on the same host may access its contents. Ollama and Weaviate are bound to local endpoints by this implementation, but remote AI provider profiles can transmit prompts to their configured HTTPS endpoint. Review selected providers' retention policies before sending proprietary source code. Never paste credentials or private keys into chat or memory.
+
+### Security scanning, reports, and CI examples
+
+The deterministic scanner can run with no AI model:
+
+```bash
+python main.py --cli ./project
+python main.py --cli ./project --severity high --confidence 0.8
+python main.py --cli ./project --format json --output findings.json
+python main.py --cli ./project --format sarif --output findings.sarif
+python main.py --cli ./project --format html --output findings.html
+python main.py --cli ./project --fail-on high
+python main.py --cli ./project --write-baseline accepted.json
+python main.py --cli ./project --baseline accepted.json
+python main.py --list-engines
+```
+
+Findings include engine, rule ID, severity, confidence, source location, evidence, guidance, and a fingerprint. Baselines and suppression are review controls, not proof that a finding is harmless. The scanner does not execute target code. Its rules produce **evidence for human investigation**, not guarantees of exploitability or completeness.
+
+### Troubleshooting
+
+| Symptom | Check | Typical action |
+| --- | --- | --- |
+| GUI cannot launch | `python -m pip check` | Install `requirements.txt` in the active venv |
+| Ollama unavailable | `curl http://127.0.0.1:11434/api/tags` | Install/start Ollama |
+| Model not found | `ollama list` | `ollama pull qwen2.5-coder:7b` |
+| Embedding unavailable | `ollama list` | `ollama pull nomic-embed-text` |
+| Weaviate unavailable | `docker compose -f docker-compose.weaviate.yml ps` | Start Docker and Compose service |
+| Weaviate port occupied | Inspect the service on port 8080 | Stop conflicting process; startup port check is not identity validation |
+| Search finds no memories | Check opt-in, saved messages, query and scope | Try an exact SQLite substring or save a new opted-in message |
+| TUI errors | Confirm interactive terminal/curses | Use `--cli` in automation |
+| Memory deletion fails | Check Weaviate readiness | Restore local service, then retry deletion |
+| Slow inference | Check CPU/GPU/RAM and model size | Select a smaller generation model |
+
+### Testing and current limitations
+
+Run the checked-in regression tests:
+
+```bash
+python -m unittest test_provider_store test_ollama_local test_chat_memory
+```
+
+These cover provider validation, model helper behavior, and foundational memory paths. **They do not establish successful end-to-end execution of the latest hybrid retrieval and interface changes.** Live integration testing with Docker, Weaviate, Ollama, GUI and terminal interactions remains necessary. For production hardening, add health checks, robust retry/backoff, indexed vector reconciliation, authenticated memory access, encryption for local transcripts, relevance reranking, prompt-injection defenses, and dedicated hybrid-retrieval tests.
+
+### Operational summary
+
+- **Local scan:** no AI provider required; use `--cli`, `--tui`, or GUI Local Super Scan.
+- **Local chat:** select the Ollama preset and a downloaded generation model.
+- **Semantic memory:** requires Ollama's embedding model, Weaviate, and explicit opt-in.
+- **Hybrid recall:** combines Weaviate vector search and SQLite substring matching.
+- **Automatic startup:** interactive modes try to launch Weaviate via Docker; `--no-weaviate` skips this attempt.
+- **Privacy:** SQLite transcripts and Weaviate message text are not encrypted by this memory implementation.
