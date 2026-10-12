@@ -513,6 +513,7 @@ class App(ctk.CTk):
         self.chat_menu.pack(side="left",padx=4)
         ctk.CTkButton(toolbar,text="New chat",command=self._chat_new,width=90).pack(side="left",padx=4)
         ctk.CTkButton(toolbar,text="Delete chat",command=self._chat_delete,width=100).pack(side="left",padx=4)
+        ctk.CTkButton(toolbar,text="Search memory",command=self._chat_search_memory,width=120).pack(side="left",padx=4)
         ctk.CTkButton(toolbar,text="Erase all memory",command=self._chat_erase_all,width=150).pack(side="right",padx=4)
         options=ctk.CTkFrame(parent,fg_color="transparent")
         options.grid(row=1,column=0,padx=8,pady=4,sticky="ew")
@@ -560,6 +561,29 @@ class App(ctk.CTk):
             self.chat_session=items[0][0] if items else self.memory_store.new_chat()
             self._chat_refresh()
         except Exception as exc: messagebox.showerror("Memory deletion",clean_for_ui(exc,1000))
+
+    def _chat_search_memory(self):
+        query=self.chat_input.get("1.0","end").strip()
+        if not query:
+            return messagebox.showinfo("Memory search","Type a search query into the chat box first.")
+        def work():
+            try:
+                matches=self.memory_store.recall(query,k=12)
+                lines=[str(n)+". ["+str(item.get("role","?"))+"] "+str(item.get("content",""))[:1600] for n,item in enumerate(matches,1)]
+                result="\\n\\n".join(lines) if lines else "No related memories found."
+            except Exception as exc:
+                result="Memory search unavailable: "+clean_for_ui(exc,800)
+            self.after(0,lambda text=result:self._show_memory_matches(text))
+        threading.Thread(target=work,daemon=True,name="daybreak-memory-search").start()
+
+    def _show_memory_matches(self,content):
+        dialog=ctk.CTkToplevel(self)
+        dialog.title("Weaviate memory recall")
+        dialog.geometry("740x530")
+        box=ctk.CTkTextbox(dialog,wrap="word")
+        box.pack(fill="both",expand=True,padx=12,pady=12)
+        box.insert("1.0",content)
+        box.configure(state="disabled")
 
     def _chat_erase_all(self):
         if not messagebox.askyesno("Erase all memory","Permanently erase ALL chat history and stored Weaviate memory?"): return
