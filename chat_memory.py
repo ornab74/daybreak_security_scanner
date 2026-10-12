@@ -102,6 +102,66 @@ class MemoryStore:
         result=_post(WEAVIATE+"/v1/graphql",{"query":gql})
         if result.get("errors"): raise MemoryError("Weaviate semantic search failed.")
         return result.get("data",{}).get("Get",{}).get(CLASS_NAME,[]) or []
+    def search_history(self, query, k=10, session=None):
+        """Offline keyword search of the local SQLite journal, newest first."""
+        if not isinstance(query,str) or not query.strip():
+            return []
+        limit=min(max(int(k),1),50)
+        escaped=query.strip().replace("\\","\\\\").replace("%","\\%").replace("_","\\_")
+        sql=("SELECT id,session,role,content,created FROM messages "
+             "WHERE content LIKE ? ESCAPE '\\'")
+        params=["%"+escaped+"%"]
+        if session is not None:
+            sql+=" AND session=?"
+            params.append(session)
+        sql+=" ORDER BY created DESC LIMIT ?"
+        params.append(limit)
+        with self._db() as db:
+            rows=db.execute(sql,params).fetchall()
+        return [{"id":ident,"session":sid,"role":role,"content":content,
+                 "created":created,"source":"sqlite"} for ident,sid,role,content,created in rows]
+
+    def memory_stats(self):
+        """Local counts, including the number of messages indexed in Weaviate."""
+        with self._db() as db:
+            conversations=db.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+            messages=db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            indexed=db.execute("SELECT COUNT(*) FROM messages WHERE vector_id IS NOT NULL").fetchone()[0]
+        return {"conversations":conversations,"messages":messages,
+                "weaviate_indexed":indexed,"sqlite_only":messages-indexed}
+
+    def hybrid_recall(self,query,k=5,embedding_model="nomic-embed-text",session=None):
+        """Merge semantic Weaviate results with offline SQLite keyword matches.
+
+        Weaviate is the semantic source of truth; SQLite supplies exact-match
+        recall and remains useful if local services are unavailable.
+        """
+        limit=min(max(int(k),1),12)
+        lexical=self.search_history(query,k=limit,session=session)
+        semantic=[]
+        error=None
+        try:
+            semantic=self.recall(query,k=limit,embedding_model=embedding_model)
+        except MemoryError as exc:
+            error=exc
+        results=[]
+        seen=set()
+        for item in semantic:
+            if session is not None and item.get("session")!=session:
+                continue
+            key=(item.get("session"),item.get("role"),item.get("content"))
+            if key in seen: continue
+            seen.add(key)
+            results.append({**item,"source":"weaviate"})
+        for item in lexical:
+            key=(item["session"],item["role"],item["content"])
+            if key in seen: continue
+            seen.add(key)
+            results.append(item)
+        if not results and error is not None:
+            raise error
+        return results[:limit]
+
     def forget_chat(self,session):
         with self._db() as db:
             ids=[r[0] for r in db.execute("SELECT vector_id FROM messages WHERE session=? AND vector_id IS NOT NULL",(session,))]
