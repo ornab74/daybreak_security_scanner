@@ -8,6 +8,7 @@ import threading
 import concurrent.futures
 from enum import Enum
 from pathlib import Path
+from ollama_local import OllamaError, available_models, start_server, pull_model, ollama_installed
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
@@ -362,6 +363,7 @@ class App(ctk.CTk):
         self._refresh_key_status()
         self._apply_theme(self.theme_choice.get())
         self.after(350, self._show_startup_if_needed)
+        self.after(750, self._detect_ollama)
 
     def _build_ui(self):
         self.grid_columnconfigure(0, weight=1)
@@ -380,8 +382,9 @@ class App(ctk.CTk):
         ctk.CTkLabel(brand, text="Security Workbench · local evidence + layered AI review", font=ctk.CTkFont(size=12), anchor="w").pack(anchor="w")
         self.key_status = ctk.CTkLabel(heading, text="", corner_radius=10, width=105, height=28)
         self.key_status.grid(row=0, column=1, padx=6)
-        ctk.CTkButton(heading, text="Provider settings", command=self._open_provider_settings, width=130, fg_color="transparent", border_width=1).grid(row=0, column=2, padx=4)
-        ctk.CTkButton(heading, text="Setup", command=self._open_startup_wizard, width=82).grid(row=0, column=3, padx=(4,0))
+        ctk.CTkButton(heading, text="Ollama", command=self._open_ollama_manager, width=100).grid(row=0, column=2, padx=4)
+        ctk.CTkButton(heading, text="Provider settings", command=self._open_provider_settings, width=130, fg_color="transparent", border_width=1).grid(row=0, column=3, padx=4)
+        ctk.CTkButton(heading, text="Setup", command=self._open_startup_wizard, width=82).grid(row=0, column=4, padx=(4,0))
 
         toolbar = ctk.CTkFrame(top, corner_radius=10)
         toolbar.grid(row=1, column=0, padx=14, pady=(0,10), sticky="ew")
@@ -577,7 +580,7 @@ class App(ctk.CTk):
             self._style_widget_tree(self._startup_window, palette)
 
     def _show_startup_if_needed(self):
-        if not has_saved_key() and not self.key_entry.get().strip():
+        if not self.provider_store.exists() and not has_saved_key() and not self.key_entry.get().strip():
             self._open_startup_wizard()
 
     def _open_startup_wizard(self):
@@ -685,6 +688,106 @@ class App(ctk.CTk):
 
     def _dependency_mode_changed(self, selected):
         self.forecast_menu.configure(state="disabled" if selected == "Current packages/CVEs" else "normal")
+
+    def _detect_ollama(self):
+        """Detect existing local Ollama without blocking the GUI."""
+        def run():
+            try:
+                models = available_models()
+            except OllamaError:
+                return
+            self.after(0, lambda: self._activate_ollama(models, quiet=True))
+        threading.Thread(target=run, daemon=True, name="daybreak-ollama-detect").start()
+
+    def _activate_ollama(self, models, *, quiet=False, requested=None):
+        if not models:
+            if not quiet:
+                messagebox.showinfo("Ollama", "Ollama is running but has no models. Download one in the Ollama panel.")
+            return
+        try:
+            existing = self.provider_store.load(resolve_dns=False)
+            if existing and existing.provider != "Ollama (local)" and quiet:
+                return  # Never override explicitly configured cloud providers.
+            model = requested if requested in models else (
+                existing.model if existing and existing.provider == "Ollama (local)" and existing.model in models
+                else models[0]
+            )
+            profile = ProviderProfile("Local Ollama", "Ollama (local)",
+                "http://127.0.0.1:11434/v1", model, "", "chat_completions")
+            self.provider_store.save(profile, resolve_dns=False)
+            self._api_base_url = profile.base_url
+            self._api_protocol = profile.protocol
+            self._provider_model = model
+            self.model_choice.set(model)
+            self.model_status.configure(text=f"Ollama · {model}")
+            self._refresh_key_status()
+        except Exception as exc:
+            if not quiet:
+                messagebox.showerror("Ollama", clean_for_ui(exc, 1000))
+
+    def _open_ollama_manager(self):
+        window = ctk.CTkToplevel(self)
+        window.title("Local Ollama models")
+        window.geometry("640x390")
+        window.transient(self)
+        window.grid_columnconfigure(0, weight=1)
+        state = ctk.StringVar(value="Checking local Ollama…")
+        ctk.CTkLabel(window, text="Ollama · on-device AI", font=ctk.CTkFont(size=22,weight="bold")).grid(row=0,column=0,padx=22,pady=(22,8),sticky="w")
+        ctk.CTkLabel(window, textvariable=state, wraplength=580,anchor="w").grid(row=1,column=0,padx=22,pady=6,sticky="ew")
+        selection = ctk.StringVar(value="")
+        choices = ctk.CTkOptionMenu(window, variable=selection, values=["No models detected"])
+        choices.grid(row=2,column=0,padx=22,pady=10,sticky="ew")
+        ctk.CTkLabel(window, text="Download model (example: qwen2.5-coder:7b)",anchor="w").grid(row=3,column=0,padx=22,sticky="w")
+        model_entry = ctk.CTkEntry(window)
+        model_entry.insert(0,"qwen2.5-coder:7b")
+        model_entry.grid(row=4,column=0,padx=22,pady=(4,10),sticky="ew")
+        actions = ctk.CTkFrame(window,fg_color="transparent")
+        actions.grid(row=5,column=0,padx=22,pady=10,sticky="ew")
+        def refresh():
+            def work():
+                try:
+                    models = available_models()
+                    def show():
+                        if not window.winfo_exists(): return
+                        state.set("Ollama ready · select a downloaded model" if models else "Ollama running, but no models downloaded")
+                        choices.configure(values=models or ["No models detected"])
+                        selection.set(models[0] if models else "No models detected")
+                    window.after(0, show)
+                except OllamaError as exc:
+                    window.after(0, lambda msg=str(exc): state.set(msg) if window.winfo_exists() else None)
+            threading.Thread(target=work,daemon=True).start()
+        def start():
+            def work():
+                try:
+                    start_server()
+                    window.after(0, lambda: state.set("Ollama started. Click Refresh when ready."))
+                except OllamaError as exc:
+                    window.after(0, lambda msg=str(exc): state.set(msg))
+            state.set("Starting Ollama…")
+            threading.Thread(target=work,daemon=True).start()
+        def pull():
+            model=model_entry.get().strip()
+            state.set(f"Downloading {model}… (may take several minutes)")
+            def work():
+                try:
+                    pull_model(model)
+                    window.after(0, refresh)
+                except OllamaError as exc:
+                    window.after(0, lambda msg=str(exc): state.set(msg))
+            threading.Thread(target=work,daemon=True).start()
+        def use():
+            try:
+                models=available_models()
+                if selection.get() not in models:
+                    raise OllamaError("Select an installed model and click Refresh first.")
+                self._activate_ollama(models, requested=selection.get())
+                window.destroy()
+            except OllamaError as exc:
+                state.set(str(exc))
+        for title,command in (("Refresh",refresh),("Start Ollama",start),("Download",pull),("Use model",use)):
+            ctk.CTkButton(actions,text=title,command=command,width=124).pack(side="left",padx=4)
+        ctk.CTkLabel(window,text="Ollama must be installed separately. All model inference stays on this device; advisory lookups may use the network.",wraplength=580,justify="left").grid(row=6,column=0,padx=22,pady=14,sticky="w")
+        refresh()
 
     def _refresh_key_status(self):
         saved = self.provider_store.exists() or has_saved_key()
