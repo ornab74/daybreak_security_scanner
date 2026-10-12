@@ -705,3 +705,23 @@ authentication, billing, permission, and invalid-request failures remain visible
 ## Production hardening ideas
 
 For a stronger production system, add repository-aware symbol/call-graph context, deterministic static-analysis adapters (Semgrep/CodeQL/etc.), patch application in a disposable worktree, unit-test execution in a sandbox, and a final diff re-scan before any human-approved merge.
+
+
+## Local Ollama (no cloud model API key)
+
+Install [Ollama](https://ollama.com/), start its local service, and download a model capable of following JSON schema instructions:
+
+```bash
+ollama pull qwen2.5-coder:7b
+ollama serve  # only if Ollama is not already running
+python app.py --gui
+```
+
+In **Provider settings**, select **Ollama (local)**. The preset fills in:
+
+- **API endpoint:** `http://127.0.0.1:11434/v1`
+- **Model ID:** `qwen2.5-coder:7b` (replace with any model you have pulled)
+- **Protocol:** `chat_completions`
+- **API key:** leave empty; local Ollama needs none.
+
+Save the encrypted provider profile and run an AI-assisted scan. Ollama must be running on the **same computer** as the desktop scanner. No cloud LLM endpoint is used for this profile. Its chat completions are validated against the existing Pydantic response schemas; smaller models can fail to produce conforming responses. The built-in deterministic Local Super Scan remains usable without Ollama. The Ollama profile does **not** enable live web search. Dependency advisory lookups and other network-enabled functions of the scanner can still access the network; this setting controls the model endpoint, not a global offline mode. Never expose the Ollama server to an untrusted network.
