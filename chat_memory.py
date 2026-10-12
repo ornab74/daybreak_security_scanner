@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 from pathlib import Path
 from datetime import datetime, timezone
-from urllib.request import Request, urlopen
+from urllib.request import Request, build_opener, ProxyHandler
 from urllib.error import URLError, HTTPError
 from platformdirs import user_data_dir
 
@@ -18,13 +18,15 @@ WEAVIATE = "http://127.0.0.1:8080"
 OLLAMA = "http://127.0.0.1:11434"
 CLASS_NAME = "DaybreakMemory"
 MAX_TEXT = 12000
+# Ignore environment proxy settings for local-only memory traffic.
+DIRECT = build_opener(ProxyHandler({}))
 
 class MemoryError(RuntimeError): pass
 
 def _post(url, payload, timeout=20, method="POST"):
     req=Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json"}, method=method)
     try:
-        with urlopen(req, timeout=timeout) as r: return json.load(r)
+        with DIRECT.open(req, timeout=timeout) as r: return json.load(r)
     except (URLError, HTTPError, ValueError, TimeoutError) as e:
         raise MemoryError(f"Local memory service unavailable: {type(e).__name__}") from e
 
@@ -37,7 +39,7 @@ def embed(text, model="nomic-embed-text"):
 def _ensure_schema():
     req=Request(WEAVIATE+"/v1/schema/"+CLASS_NAME)
     try:
-        with urlopen(req,timeout=5): return
+        with DIRECT.open(req,timeout=5): return
     except HTTPError as e:
         if e.code != 404: raise MemoryError(f"Weaviate schema HTTP {e.code}") from e
     except URLError as e: raise MemoryError("Weaviate is not running on localhost:8080.") from e
@@ -71,6 +73,9 @@ class MemoryStore:
         with self._db() as db: return db.execute("SELECT role,content FROM messages WHERE session=? ORDER BY rowid",(session,)).fetchall()
     def save(self,session,role,content,remember=False,embedding_model="nomic-embed-text"):
         if role not in ("user","assistant") or not content or len(content)>MAX_TEXT: raise ValueError("Invalid chat message")
+        with self._db() as db:
+            if not db.execute("SELECT 1 FROM conversations WHERE id=?",(session,)).fetchone():
+                raise ValueError("Unknown conversation")
         vid=None
         if remember:
             _ensure_schema()
@@ -114,7 +119,7 @@ class MemoryStore:
     def _delete_vector(self,ident):
         req=Request(WEAVIATE+"/v1/objects/"+CLASS_NAME+"/"+ident,method="DELETE")
         try:
-            with urlopen(req,timeout=10): pass
+            with DIRECT.open(req,timeout=10): pass
         except HTTPError as e:
             if e.code!=404: raise MemoryError("Could not delete Weaviate memory.") from e
         except URLError as e: raise MemoryError("Cannot delete Weaviate memory while offline.") from e
